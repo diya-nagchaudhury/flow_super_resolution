@@ -45,3 +45,15 @@ src/wandb/*
 
 # Pytorch model files
 *.pth
+
+# Exclude pycache files
+__pycache__/*
+
+# Exclude wandb files
+wandb/*
+
+# Exclude checkpoint files
+checkpoint/*
+
+# exclude .gitmodules file
+.gitmodules
