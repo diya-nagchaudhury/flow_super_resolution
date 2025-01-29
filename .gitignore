@@ -54,6 +54,3 @@ wandb/*
 
 # Exclude checkpoint files
 checkpoint/*
-
-# exclude .gitmodules file
-.gitmodules
