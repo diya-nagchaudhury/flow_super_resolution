@@ -1,0 +1,6 @@
+[submodule "SciREX"]
+	path = SciREX
+	url = https://github.com/zenoxml/SciREX.git
+[submodule "scirex"]
+	path = scirex
+	url = https://github.com/zenoxml/SciREX.git
