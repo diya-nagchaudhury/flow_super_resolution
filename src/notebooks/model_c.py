@@ -868,149 +868,99 @@ def train_all_models(train_loader, val_loader, device, base_path, config):
         plt.savefig(os.path.join(base_path, f'{model_name.lower()}_training_curves.png'))
         plt.close()
         
-def plot_comparison(models: Dict[str, nn.Module], 
-                   test_batch: Tuple[torch.Tensor, torch.Tensor],
-                   channel_names: List[str] = ['Density', 'X-Velocity', 'Y-Velocity', 'Z-Velocity'],
-                   save_path: str = 'model_comparison.png',
-                   plot_error_maps: bool = True,
-                   vmin: Optional[float] = None,
-                   vmax: Optional[float] = None) -> Dict[str, Dict[str, float]]:
+def plot_comparison(models: Dict[str, nn.Module], test_batch: Tuple[torch.Tensor, torch.Tensor],
+                   save_path: str = 'model_comparison.png'):
     """
-    Create detailed comparison plots for all models including predictions and error maps.
-    
-    Args:
-        models (Dict[str, nn.Module]): Dictionary of model name to model instance
-        test_batch (Tuple[torch.Tensor, torch.Tensor]): Batch of (input, target) data
-        channel_names (List[str]): Names of the channels to display
-        save_path (str): Path to save the comparison plot
-        plot_error_maps (bool): Whether to plot error maps for each model
-        vmin (float, optional): Minimum value for colormap normalization
-        vmax (float, optional): Maximum value for colormap normalization
-        
-    Returns:
-        Dict[str, Dict[str, float]]: Dictionary of metrics for each model
+    Create comparison plot with a cleaner layout showing:
+    - LR input and HR target
+    - All model predictions
+    - Error maps for Bicubic, Bicubic-FNO and Blended-FNO
     """
     inputs, targets = test_batch
-    n_channels = len(channel_names)
-    n_models = len(models)
+    channels = ['Density', 'X-Velocity', 'Y-Velocity', 'Z-Velocity']
+    error_map_models = ['Bicubic', 'Bicubic-FNO', 'Blended-FNO']
     
-    # Calculate number of rows needed
-    rows_per_channel = 2 if plot_error_maps else 1
-    n_rows = n_channels * rows_per_channel
+    # Calculate layout
+    n_base_cols = 2  # Input + Target
+    n_model_cols = len(models)  # Model predictions
+    n_error_cols = len(error_map_models)  # Error maps
+    total_cols = n_base_cols + n_model_cols + n_error_cols
     
-    # Create figure
-    fig = plt.figure(figsize=(4 * (n_models + 2), 4 * n_rows))
-    gs = plt.GridSpec(n_rows, n_models + 2, figure=fig)
+    # Create figure with the correct number of columns
+    fig, axs = plt.subplots(len(channels), total_cols, figsize=(25, 16))
+    plt.suptitle('Flow Field Super Resolution Model Comparison', fontsize=16)
     
-    # Set up the plot
-    plt.suptitle('Super Resolution Model Comparison', fontsize=16, y=0.92)
-    
-    # Initialize metrics dictionary
+    # Dictionary to store metrics
     all_metrics = {}
     
-    # Determine global value range for consistent coloring
-    if vmin is None or vmax is None:
-        all_values = [inputs.cpu().numpy(), targets.cpu().numpy()]
-        for model in models.values():
-            with torch.no_grad():
-                output = model(inputs)
-                all_values.append(output.cpu().numpy())
-        all_values = np.concatenate([v.flatten() for v in all_values])
-        vmin = np.percentile(all_values, 1) if vmin is None else vmin
-        vmax = np.percentile(all_values, 99) if vmax is None else vmax
-    
-    # Create custom colormaps
-    prediction_cmap = plt.cm.viridis
-    error_cmap = plt.cm.RdBu_r
-    
-    def add_colorbar(im, ax):
-        divider = make_axes_locatable(ax)
-        cax = divider.append_axes("right", size="5%", pad=0.05)
-        plt.colorbar(im, cax=cax)
-    
-    # Plot inputs and targets
-    for i, channel in enumerate(channel_names):
-        base_row = i * rows_per_channel
+    # Plot LR inputs and HR targets (first two columns)
+    for i, channel in enumerate(channels):
+        # Plot LR input
+        im = axs[i, 0].imshow(inputs[0, i].cpu().detach().numpy(), cmap='viridis')
+        axs[i, 0].set_title(f'LR Input\n{channel}' if i == 0 else channel)
+        plt.colorbar(im, ax=axs[i, 0])
         
-        # Plot input
-        ax = plt.subplot(gs[base_row, 0])
-        im = ax.imshow(inputs[0, i].cpu().numpy(), 
-                      cmap=prediction_cmap, 
-                      vmin=vmin, vmax=vmax)
-        ax.set_title(f'Input\n{channel}' if i == 0 else channel)
-        add_colorbar(im, ax)
-        ax.axis('off')
-        
-        # Plot target
-        ax = plt.subplot(gs[base_row, 1])
-        im = ax.imshow(targets[0, i].cpu().numpy(), 
-                      cmap=prediction_cmap,
-                      vmin=vmin, vmax=vmax)
-        ax.set_title('Target' if i == 0 else '')
-        add_colorbar(im, ax)
-        ax.axis('off')
-        
-        # Clear error map slots for input and target
-        if plot_error_maps:
-            ax = plt.subplot(gs[base_row + 1, 0])
-            ax.axis('off')
-            ax = plt.subplot(gs[base_row + 1, 1])
-            ax.axis('off')
+        # Plot HR target
+        im = axs[i, 1].imshow(targets[0, i].cpu().detach().numpy(), cmap='viridis')
+        axs[i, 1].set_title('HR Target' if i == 0 else '')
+        plt.colorbar(im, ax=axs[i, 1])
     
-    # Process each model
-    for j, (name, model) in enumerate(models.items(), 2):
+    # Plot model predictions
+    model_outputs = {}  # Store outputs for error map calculation
+    for idx, (name, model) in enumerate(models.items()):
+        col = idx + n_base_cols  # Start after input and target
         model.eval()
-        channel_metrics = []
-        
         with torch.no_grad():
             outputs = model(inputs)
+            model_outputs[name] = outputs  # Store for error maps
             
-            for i, channel in enumerate(channel_names):
-                base_row = i * rows_per_channel
-                
-                # Get outputs for current channel
-                output_channel = outputs[0, i].cpu().numpy()
-                target_channel = targets[0, i].cpu().numpy()
-                
-                # Calculate metrics
-                metrics = calculate_metrics(
-                    output_channel[None, None, ...], 
-                    target_channel[None, None, ...]
-                )
+            # Calculate metrics for each channel
+            channel_metrics = []
+            for c in range(4):
+                output_channel = outputs[0, c:c+1]
+                target_channel = targets[0, c:c+1]
+                metrics = calculate_metrics(output_channel, target_channel)
                 channel_metrics.append(metrics)
                 
                 # Plot prediction
-                ax = plt.subplot(gs[base_row, j])
-                im = ax.imshow(output_channel, 
-                             cmap=prediction_cmap,
-                             vmin=vmin, vmax=vmax)
-                title = f'{name}\nPSNR: {metrics["psnr"]:.2f}' if i == 0 else ''
-                ax.set_title(title)
-                add_colorbar(im, ax)
-                ax.axis('off')
-                
-                # Plot error map
-                if plot_error_maps:
-                    ax = plt.subplot(gs[base_row + 1, j])
-                    error = output_channel - target_channel
-                    max_error = np.max(np.abs(error))
-                    im = ax.imshow(error, 
-                                 cmap=error_cmap,
-                                 norm=plt.Normalize(vmin=-max_error, vmax=max_error))
-                    ax.set_title(f'Error Map\nMSE: {metrics["mse"]:.6f}')
-                    add_colorbar(im, ax)
-                    ax.axis('off')
+                im = axs[c, col].imshow(outputs[0, c].cpu().detach().numpy(), cmap='viridis')
+                title = f'{name}\nPSNR: {metrics["psnr"]:.2f}' if c == 0 else ''
+                axs[c, col].set_title(title)
+                plt.colorbar(im, ax=axs[c, col])
             
-        # Calculate average metrics across channels
-        avg_metrics = {
-            'mse': np.mean([m['mse'] for m in channel_metrics]),
-            'ssim': np.mean([m['ssim'] for m in channel_metrics]),
-            'psnr': np.mean([m['psnr'] for m in channel_metrics]),
-            'channel_metrics': channel_metrics
-        }
-        all_metrics[name] = avg_metrics
+            # Average metrics
+            avg_metrics = {
+                'mse': np.mean([m['mse'] for m in channel_metrics]),
+                'ssim': np.mean([m['ssim'] for m in channel_metrics]),
+                'psnr': np.mean([m['psnr'] for m in channel_metrics])
+            }
+            all_metrics[name] = avg_metrics
     
-    # Adjust layout and save
+    # Plot error maps for selected models
+    error_start_col = n_base_cols + n_model_cols
+    for idx, model_name in enumerate(error_map_models):
+        if model_name in model_outputs:
+            outputs = model_outputs[model_name]
+            col = error_start_col + idx
+            
+            for c in range(4):
+                error = outputs[0, c].cpu().detach().numpy() - targets[0, c].cpu().detach().numpy()
+                max_err = np.abs(error).max()
+                im_error = axs[c, col].imshow(
+                    error, 
+                    cmap='RdBu',
+                    norm=plt.Normalize(vmin=-max_err, vmax=max_err)
+                )
+                title = f'{model_name}\nError Map' if c == 0 else ''
+                axs[c, col].set_title(title)
+                plt.colorbar(im_error, ax=axs[c, col])
+    
+    # Remove axis ticks
+    for ax in axs.flat:
+        ax.set_xticks([])
+        ax.set_yticks([])
+    
+    # Adjust layout
     plt.tight_layout()
     plt.savefig(save_path, bbox_inches='tight', dpi=300)
     plt.close()
@@ -1020,17 +970,8 @@ def plot_comparison(models: Dict[str, nn.Module],
     print("-" * 80)
     print(f"{'Model':<15} {'MSE':>10} {'SSIM':>10} {'PSNR':>10}")
     print("-" * 80)
-    
     for name, metrics in all_metrics.items():
-        print(f"{name:<15} {metrics['mse']:>10.6f} "
-              f"{metrics['ssim']:>10.4f} {metrics['psnr']:>10.2f}")
-        
-        # Print per-channel metrics
-        for i, channel in enumerate(channel_names):
-            channel_metric = metrics['channel_metrics'][i]
-            print(f"  {channel:<13} {channel_metric['mse']:>10.6f} "
-                  f"{channel_metric['ssim']:>10.4f} {channel_metric['psnr']:>10.2f}")
-    
+        print(f"{name:<15} {metrics['mse']:>10.6f} {metrics['ssim']:>10.4f} {metrics['psnr']:>10.2f}")
     print("-" * 80)
     
     return all_metrics
@@ -1046,7 +987,7 @@ if __name__ == "__main__":
     # Setup paths and directories
     base_path = "/home/diya/Projects/super_resolution/flow_super_resolution/"
     input_path = os.path.join(base_path, "dataset/")
-    output_path = os.path.join(base_path, "outputs/model_c")
+    output_path = os.path.join(base_path, "outputs/model_comparison/")
     if not os.path.exists(output_path):
         os.makedirs(output_path)
     paths = create_output_dirs(output_path)
@@ -1113,17 +1054,19 @@ if __name__ == "__main__":
         
         # Basic usage
         metrics = plot_comparison(models, (inputs, targets), save_path=plot_path)
+        
+        
 
         # With custom settings
-        metrics = plot_comparison(
-            models, 
-            (inputs, targets),
-            channel_names=['Density', 'Vx', 'Vy', 'Vz'],
-            save_path=plot_path,
-            plot_error_maps=True,
-            vmin=-1.0,
-            vmax=1.0
-        )
+        # metrics = plot_comparison(
+        #     models, 
+        #     (inputs, targets),
+        #     channel_names=['Density', 'Vx', 'Vy', 'Vz'],
+        #     save_path=plot_path,
+        #     plot_error_maps=True,
+        #     vmin=-1.0,
+        #     vmax=1.0
+        # )
         
         #metrics = plot_comparison(models, (inputs, targets), save_path=plot_path)
         
